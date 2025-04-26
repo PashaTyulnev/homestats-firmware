@@ -1,13 +1,10 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiManager.h>
 #include <DHT.h>
 #include <MHZ19.h>
 #include <SoftwareSerial.h>
-
-// WLAN-Daten
-const char* ssid = "Jupa 2,4";
-const char* password = "YouCrazyCat5454";
 
 // Serveradresse
 const char* serverURL = "home.it-horizon.de";
@@ -30,17 +27,14 @@ int schlafZeit = 9680;
 MHZ19 myMHZ19;
 SoftwareSerial mySerial(RX_PIN, TX_PIN);
 
-void connectToWiFi(const char* ssid, const char* password) {
-  Serial.print("Verbinde mit WLAN...");
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWLAN verbunden.");
-  Serial.print("IP-Adresse: ");
-  Serial.println(WiFi.localIP());
-}
+// Reset Button und LED
+#define RESET_BUTTON_PIN 0 // Beispiel: GPIO0
+#define LED_PIN 2 // Beispiel: GPIO2 (eingebaute LED auf vielen Boards)
+
+WiFiManager wifiManager;
+bool portalActive = false;
+unsigned long lastBlinkTime = 0;
+bool ledState = false;
 
 void initSensors() {
   dht.begin();
@@ -91,11 +85,60 @@ void sendSensorData(float humidity, float temperature, float dustVoltage, float 
 
 void setup() {
   Serial.begin(9600);
-  connectToWiFi(ssid, password);
+
+  pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+
+  if (digitalRead(RESET_BUTTON_PIN) == LOW) {
+    Serial.println("Reset-Taste gedrückt beim Start - WLAN-Daten löschen!");
+    wifiManager.resetSettings();
+    delay(1000);
+  }
+
+  // Jetzt versuchen, automatisch zu verbinden:
+  if (!wifiManager.autoConnect("HomeStats")) {
+    Serial.println("Verbindung fehlgeschlagen! Starte neu...");
+    delay(3000);
+    ESP.restart();
+  }
+
+  Serial.println("WLAN verbunden!");
+  Serial.print("IP-Adresse: ");
+  Serial.println(WiFi.localIP());
+
+  portalActive = false;
   initSensors();
 }
 
+
+void handleButtonAndPortal() {
+  if (digitalRead(RESET_BUTTON_PIN) == LOW) {
+    Serial.println("Reset-Taste gedrückt - WLAN neu konfigurieren!");
+    wifiManager.resetSettings();
+    delay(500);
+    portalActive = true;
+    wifiManager.startConfigPortal("HomeStats");
+    ESP.restart();
+  }
+}
+
+void handleBlinking() {
+  if (portalActive) {
+    if (millis() - lastBlinkTime > 500) {
+      lastBlinkTime = millis();
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState);
+    }
+  } else {
+    digitalWrite(LED_PIN, HIGH); // LED aus
+  }
+}
+
 void loop() {
+  handleButtonAndPortal();
+  handleBlinking();
+
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
   float dustVoltage = readDustVoltage();
