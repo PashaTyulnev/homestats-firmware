@@ -15,10 +15,13 @@ const char* serverURL = "home.it-horizon.de";
 DHT dht(DHTPIN, DHTTYPE);
 
 // Staubsensor
-const int messPin = A0;
-const unsigned int abtastZeit_us = 280;
-const unsigned int verzogerungZeit_us = 40;
-const unsigned int schlafZeit_us = 9680;
+const int sharpLedPin = 4;
+const int sharpVoPin = A0;
+static float Voc = 0.6;
+const float K = 0.5;
+const int N = 100;  // Anzahl Messwerte für Durchschnitt
+unsigned long VoRawTotal = 0;
+int VoRawCount = 0;
 
 // CO2 Sensor (MH-Z19)
 #define RX_PIN 12
@@ -41,17 +44,39 @@ void initSensors() {
   mySerial.begin(BAUDRATE);
   myMHZ19.begin(mySerial);
   myMHZ19.autoCalibration();
+  pinMode(sharpLedPin, OUTPUT);
+  digitalWrite(sharpLedPin, HIGH);
 }
 
-float readDustVoltage() {
-  delayMicroseconds(abtastZeit_us);
-  float messwert = analogRead(messPin);
-  delayMicroseconds(verzogerungZeit_us + schlafZeit_us);
-  return messwert * (3.3 / 1024.0);
-}
+// Staubmessung mit Mittelwert
+bool readDustDensity(float &voltage, float &density) {
+  digitalWrite(sharpLedPin, LOW);
+  delayMicroseconds(280);
+  int VoRaw = analogRead(sharpVoPin);
+  digitalWrite(sharpLedPin, HIGH);
+  delayMicroseconds(9620);
 
-float calculateDustDensity(float voltage) {
-  return max(0.0, 170.0 * voltage - 0.1);
+  VoRawTotal += VoRaw;
+  VoRawCount++;
+
+  if (VoRawCount < N) {
+    return false; // Noch nicht genügend Werte
+  }
+
+  // Durchschnitt berechnen
+  float avgVoRaw = VoRawTotal / (float)N;
+  VoRawTotal = 0;
+  VoRawCount = 0;
+
+  voltage = avgVoRaw / 1024.0 * 5.0;
+  float dV = voltage - Voc;
+  if (dV < 0) {
+    dV = 0;
+    Voc = voltage;
+  }
+  density = dV / K * 100.0;
+
+  return true;
 }
 
 void sendSensorData(float humidity, float temperature, float dustVoltage, float dustDensity, int co2, int co2Temp) {
@@ -67,7 +92,6 @@ void sendSensorData(float humidity, float temperature, float dustVoltage, float 
 
   if (client.connect(serverURL, 443)) {
     Serial.println("Verbunden mit Server");
-
     client.print("GET " + url + " HTTP/1.1\r\n");
     client.print("Host: " + String(serverURL) + "\r\n");
     client.print("Connection: close\r\n\r\n");
@@ -133,15 +157,19 @@ void loop() {
 
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
-  
+
   if (isnan(temperature) || isnan(humidity)) {
     Serial.println("Fehler beim Lesen des DHT-Sensors!");
     delay(2000);
     return;
   }
 
-  float dustVoltage = readDustVoltage();
-  float dustDensity = calculateDustDensity(dustVoltage);
+  float dustVoltage = 0;
+  float dustDensity = 0;
+  if (!readDustDensity(dustVoltage, dustDensity)) {
+    return; // Durchschnitt noch nicht verfügbar
+  }
+
   int co2 = myMHZ19.getCO2();
   int co2Temp = myMHZ19.getTemperature();
 
